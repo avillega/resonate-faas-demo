@@ -22,36 +22,28 @@ def execute(ctx: Context, script_content, id): ...
 
 
 @resonate.register(retry_policy=never())
-def execute_detached(ctx: Context, script, id, machine_type):
-    print("Running detached")
-    content = ""
-    try:
-        with open(script, "r") as file:
-            content = file.read()
-
-        print(f"about to send {content}")
-
-        yield ctx.rfi(execute, content, id).options(id=id, send_to=poll("gpu"))
-        return
-
-    except FileNotFoundError as ef:
-        print("Error: File not found.")
-        raise ef
-    except Exception as e:  # Catch any other exceptions
-        print(f"An error occurred: {e}")
-        raise e
+def detached_rfi(ctx: Context, content, id, machine_type):
+    yield ctx.rfi(execute, content, id).options(id=id, send_to=poll("gpu"))
+    return
 
 
 @resonate.register(retry_policy=never())
-def prep_execute(ctx: Context, id, script, machine_type):
+def prep_execute(ctx: Context, id, script, machine_type, wait):
     try:
         content = ""
         with open(script, "r") as file:
             content = file.read()
 
         print("Sending script to be executed in gpu")
-        result = yield ctx.rfc(execute, content, id).options(id=id, send_to=poll("gpu"))
-        return result
+        if wait:
+            result = yield ctx.rfc(execute, content, id).options(
+                id=id, send_to=poll("gpu")
+            )
+            return result
+        else:
+            detached_id = f"detached_{id}"
+            yield ctx.detached(detached_id, detached_rfi, content, id, "gpu")
+            return None
 
     except FileNotFoundError as ef:
         print("Error: File not found.")
@@ -87,15 +79,6 @@ def main():
 
     args, argv = parser.parse_known_args()
 
-    id = args.id
-    if args.id is None:
-        print("Generating random id")
-        id = uuid.uuid4()
-
-    print(f"You can retrive this execution using {id}")
-
-    print(f"Using args {args}")
-
     if args.get_id is not None:
         res = get_by_id(args.get_id)
         if res:
@@ -105,29 +88,23 @@ def main():
 
         return
 
+    id = args.id
+    if args.id is None:
+        id = str(uuid.uuid4())
+
+    print(f"You can retrive this execution using {id}")
     if len(argv) < 1:
         print("Script name is required")
         exit(1)
 
     print(f"Will execute {argv[0]} in {args.machine_type}...")
-    if args.wait:
-        handle = prep_execute.run(
-            f"execution-{id}-{uuid.uuid4()}",
-            id,
-            argv[0],
-            args.machine_type,
-        )
+    handle = prep_execute.run(
+        f"execution-{id}-{uuid.uuid4()}", id, argv[0], args.machine_type, args.wait
+    )
 
-        print(f"results are located at {handle.result()}")
-    else:
-        h = execute_detached.run(
-            f"execution-{id}-{uuid.uuid4()}",
-            argv[0],
-            id,
-            args.machine_type,
-        )
-
-        h.result()
+    result = handle.result()
+    if result is not None:
+        print(f"results are located at {result}")
 
 
 if __name__ == "__main__":
